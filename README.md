@@ -4,5 +4,5 @@ Neeche diye gaye button par click karke is bot ko ek click me Heroku par deploy 
 
 [![Deploy](https://herokucdn.com)](https://heroku.com)
 
-# Ai-Mention-bot-
+# Tg-Ai-Mention-bot-
 Telegram group members tagging bot 
