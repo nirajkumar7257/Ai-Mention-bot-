@@ -82,7 +82,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("➕ Add to your group", url=f"https://t.me{bot_username}?startgroup=true")],
             [
                 InlineKeyboardButton("❓ Help", callback_data="help_btn"),
-                InlineKeyboardButton("📢 Update Support", url="https://t.meyour_support_channel")
+                InlineKeyboardButton("📢 Update Support", url=os.getenv("SUPPORT_LINK", "https://t.me"))
+                
             ]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
