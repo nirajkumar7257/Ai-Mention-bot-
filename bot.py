@@ -5,7 +5,7 @@ import random
 from telegram import Update, BotCommand, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 from google import genai
-from telegram.error import RetryAfter
+from telegram.error import RetryAfter, Forbidden
 
 # Logging setup
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
@@ -16,13 +16,20 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "YAHAN_APNA_GEMINI_KEY_DALEIN")
 PORT = int(os.getenv("PORT", 8443))
 HEROKU_APP_NAME = os.getenv("HEROKU_APP_NAME")
 
+# 👑 OWNER ID SETTING: Apna asli Telegram User ID yahan dalein (bina quotes ke number)
+# Example: 123456789 (Aap @MissRose_bot par /id likhkar apni ID jaan sakte hain)
+OWNER_ID = int(os.getenv("OWNER_ID", 0)) 
+
 ai_client = genai.Client(api_key=GEMINI_API_KEY)
 
-# Smart Controls Tracking Dicts
+# Stats aur Broadcast tracking ke liye In-Memory Sets
+# Note: Heroku restart hone par ye clear ho jata hai (Production ke liye Database zaroori hai)
+served_users = set()
+served_chats = set()
+
 running_tags = {}
 paused_tags = {}
 
-# Tagging Styles Data
 TAG_STYLES = {
     "hindi": ["Suno dosto!", "Kahan ho sabhi?", "Ek zaroori baat!", "Idhar dekho bhai!"],
     "english": ["Hey everyone!", "Attention please!", "Check this out!", "Wake up guys!"],
@@ -40,11 +47,20 @@ async def post_init(application: Application) -> None:
         BotCommand("help", "Command list aur styles dekhein"),
         BotCommand("all", "Sabhi members ko tag karein"),
         BotCommand("admin", "Sirf admins ko tag karein"),
-        BotCommand("stop", "Tagging poori tarah band karein"),
+        BotCommand("stop", "Tagging loop ko band karein"),
         BotCommand("pause", "Tagging ko thodi der rokein"),
         BotCommand("resume", "Roki hui tagging fir se shuru karein")
     ]
     await application.bot.set_my_commands(commands)
+
+# Tracking Helper: Har chat aur user ki ID yaad rakhna
+def track_chat(update: Update):
+    if update.effective_chat:
+        chat_id = update.effective_chat.id
+        if update.effective_chat.type == "private":
+            served_users.add(chat_id)
+        else:
+            served_chats.add(chat_id)
 
 # Admin Verification Helper
 async def is_user_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
@@ -55,84 +71,109 @@ async def is_user_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> b
     member = await context.bot.get_chat_member(chat.id, user_id)
     return member.status in ["administrator", "creator"]
 
-# 1. /start Command (DM me buttons ke saath, Group me normal greet)
+# 1. /start Command
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    track_chat(update) # Track chat ID
     chat_type = update.message.chat.type
     bot_username = context.bot.username
 
     if chat_type == "private":
-        # DM ke liye 3 Inline Buttons banana
         keyboard = [
             [InlineKeyboardButton("➕ Add to your group", url=f"https://t.me{bot_username}?startgroup=true")],
             [
                 InlineKeyboardButton("❓ Help", callback_data="help_btn"),
-                InlineKeyboardButton("📢 Update Support", url="https://t.meyour_support_channel") # Apne channel ka link dalein
+                InlineKeyboardButton("📢 Update Support", url="https://t.meyour_support_channel")
             ]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
-
         welcome_text = (
             f"✨ **Welcome {update.effective_user.first_name}!** ✨\n\n"
             "Main ek advanced AI Mention & Mass Tagging Bot hoon.\n"
-            "Mujhe apne group me add karke full features ka maza lein. "
-            "Neeche diye gaye buttons ka use karein! 👇"
+            "Owner commands enabled hain."
         )
         await update.message.reply_text(welcome_text, reply_markup=reply_markup, parse_mode="Markdown")
     else:
-        # Group me simple message
         await update.message.reply_text("👋 Hello members! Main is group me active hoon. Commands dekhne ke liye `/help` type karein.")
 
-# 2. Callback Query Handler (Help button click handle karne ke liye)
+# 👑 OWNER COMMAND 1: /broadcast <msg> — Broadcast to all users & groups
+async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != OWNER_ID:
+        await update.message.reply_text("❌ Ye command sirf **Bot Owner** use kar sakta hai!")
+        return
+
+    if not context.args:
+        await update.message.reply_text("❌ Please format use karein: `/broadcast Mera message yahan likhein`")
+        return
+
+    broadcast_msg = "📢 **IMPORTANT BROADCAST** 📢\n\n" + " ".join(context.args)
+    all_targets = list(served_users) + list(served_chats)
+    
+    if not all_targets:
+        await update.message.reply_text("Broadcast karne ke liye koi bhi user ya group data nahi mila.")
+        return
+
+    await update.message.reply_text(f"🚀 Broadcast shuru ho raha hai... Total targets: {len(all_targets)}")
+    
+    success = 0
+    failed = 0
+
+    for chat_id in all_targets:
+        try:
+            await context.bot.send_message(chat_id=chat_id, text=broadcast_msg, parse_mode="Markdown")
+            success += 1
+            await asyncio.sleep(0.5) # Flood protection limit handling
+        except Forbidden:
+            failed += 1 # User ne bot block kar diya hai
+        except RetryAfter as e:
+            await asyncio.sleep(e.retry_after)
+            try:
+                await context.bot.send_message(chat_id=chat_id, text=broadcast_msg, parse_mode="Markdown")
+                success += 1
+            except:
+                failed += 1
+        except Exception:
+            failed += 1
+
+    await update.message.reply_text(f"✅ **Broadcast Done!**\n\n🟢 Success: {success}\n🔴 Failed/Blocked: {failed}")
+
+# 👑 OWNER COMMAND 2: /stats — View bot usage statistics
+async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != OWNER_ID:
+        await update.message.reply_text("❌ Ye command sirf **Bot Owner** use kar sakta hai!")
+        return
+
+    stats_text = (
+        "📊 **Bot Current Usage Statistics:**\n\n"
+         f"👤 **Total DM Users:** {len(served_users)}\n"
+         f"👥 **Total Active Groups:** {len(served_chats)}\n"
+         f"📈 **Total Served Chats:** {len(served_users) + len(served_chats)}"
+    )
+    await update.message.reply_text(stats_text, parse_mode="Markdown")
+
+# Inline Button Click Callback
 async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-
     if query.data == "help_btn":
-        help_text = (
-            "📊 **Advanced Tagging Guide & Options**\n\n"
-            "🏷️ **8 Tagging Styles:**\n"
-            "• `/all hindi [msg]` - Pure Hindi greetings\n"
-            "• `/all english [msg]` - Formal English\n"
-            "• `/all hinglish [msg]` - Normal chatting language\n"
-            "• `/all gm [msg]` - Good Morning wishes\n"
-            "• `/all gn [msg]` - Good Night wishes\n"
-            "• `/all joke [msg]` - Funny alert style\n"
-            "• `/all general [msg]` - Regular notifications\n\n"
-            "👮 **Smart Controls (Admins Only):**\n"
-            "• `/stop` - Tagging loop ko band karein\n"
-            "• `/pause` - Loop ko thodi der rokein\n"
-            "• `/resume` - Paused loop ko wapas chalayein"
-        )
-        # Purane text ko badal kar help text dikhana
+        help_text = "🏷️ **8 Tagging Styles:** `/all hindi`, `/all english`, `/all gm`, `/all gn`, `/all joke` etc."
         await query.message.reply_text(help_text, parse_mode="Markdown")
 
-# 3. /help Command (Direct text command)
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Yeh code direct /help command chalane par help message bhejega
-    class DummyQuery:
-        data = "help_btn"
-        async def answer(self): pass
-        @property
-        def message(self): return update.message
-    
-    update.callback_query = DummyQuery()
-    await button_click(update, context)
+    track_chat(update)
+    await update.message.reply_text("💡 Guide dekhne ke liye DM (Private chat) me `/start` karein aur Help button dabayein.")
 
-# 4. Main Advanced Tagging Engine
+# Tag Engine
 async def tag_engine(update: Update, context: ContextTypes.DEFAULT_TYPE, target_admins_only=False):
+    track_chat(update)
     chat = update.effective_chat
     if chat.type not in ["group", "supergroup"]:
-        await update.message.reply_text("❌ Ye command sirf groups me kaam karega!")
         return
-
     if not await is_user_admin(update, context):
-        await update.message.reply_text("❌ Sirf group admins hi tag commands chala sakte hain!")
         return
 
     chat_id = chat.id
     running_tags[chat_id] = True
     paused_tags[chat_id] = False
-
     args = context.args
     style = "general"
     custom_msg = ""
@@ -145,32 +186,18 @@ async def tag_engine(update: Update, context: ContextTypes.DEFAULT_TYPE, target_
             custom_msg = " ".join(args)
 
     try:
-        administrators = await chat.get_administrators()
-        targets = administrators
+        targets = await chat.get_administrators()
         users_to_tag = [admin.user for admin in targets if not admin.user.is_bot]
-        
-        if not users_to_tag:
-            await update.message.reply_text("Tag karne ke liye koi valid members nahi mile.")
-            return
-
         await update.message.reply_text("🚀 Mentioning loop shuru ho chuka hai...")
 
         for i in range(0, len(users_to_tag), 5):
-            if not running_tags.get(chat_id, False):
-                await update.message.reply_text("🛑 Tagging process ko stop kar diya gaya hai.")
-                break
-            
-            while paused_tags.get(chat_id, False):
-                await asyncio.sleep(2)
-                if not running_tags.get(chat_id, False):
-                    break
+            if not running_tags.get(chat_id, False): break
+            while paused_tags.get(chat_id, False): await asyncio.sleep(2)
 
             batch = users_to_tag[i:i+5]
             style_prefix = random.choice(TAG_STYLES[style])
             mention_line = f"✨ {style_prefix}\n✍️ Msg: {custom_msg}\n\n" if custom_msg else f"✨ {style_prefix}\n\n"
-            
-            for user in batch:
-                mention_line += f"[{user.first_name}](tg://user?id={user.id}) "
+            for user in batch: mention_line += f"[{user.first_name}](tg://user?id={user.id}) "
 
             try:
                 await context.bot.send_message(chat_id=chat_id, text=mention_line, parse_mode="Markdown")
@@ -178,31 +205,22 @@ async def tag_engine(update: Update, context: ContextTypes.DEFAULT_TYPE, target_
             except RetryAfter as e:
                 await asyncio.sleep(e.retry_after)
 
-        await update.message.reply_text("✅ Tagging complete!")
         running_tags[chat_id] = False
-
     except Exception as e:
-        logging.error(f"Error in tag_engine: {e}")
-        await update.message.reply_text("⚠️ Bot permissions check karein.")
+        logging.error(f"Error: {e}")
 
-# 5. Smart Controls
 async def stop_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if await is_user_admin(update, context):
-        running_tags[update.effective_chat.id] = False
-        paused_tags[update.effective_chat.id] = False
+    if await is_user_admin(update, context): running_tags[update.effective_chat.id] = False
 
 async def pause_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if await is_user_admin(update, context):
-        paused_tags[update.effective_chat.id] = True
-        await update.message.reply_text("⏸️ Tagging process paused. `/resume` se shuru karein.")
+    if await is_user_admin(update, context): paused_tags[update.effective_chat.id] = True
 
 async def resume_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if await is_user_admin(update, context):
-        paused_tags[update.effective_chat.id] = False
-        await update.message.reply_text("▶️ Tagging process resumed.")
+    if await is_user_admin(update, context): paused_tags[update.effective_chat.id] = False
 
-# 6. AI Message Handler
+# Message Handler (With tracking inside)
 async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    track_chat(update) # Track incoming texts too
     user_text = update.message.text
     bot_username = context.bot.username
     is_private = update.message.chat.type == "private"
@@ -210,23 +228,6 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if is_private or is_mentioned:
         clean_prompt = user_text.replace(f"@{bot_username}", "").strip()
-        if not clean_prompt:
-            await update.message.reply_text("Ji? Mujhse koi sawal poochein!")
-            return
+        if not clean_prompt: return
         try:
-            response = ai_client.models.generate_content(model='gemini-2.5-flash', contents=clean_prompt)
-            await update.message.reply_text(response.text)
-        except Exception as e:
-            logging.error(f"Gemini error: {e}")
-            await update.message.reply_text("Sorry, abhi AI busy hai.")
-
-def main():
-    app = Application.builder().token(TELEGRAM_TOKEN).post_init(post_init).build()
     
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("help", help_command))
-    app.add_handler(CommandHandler("all", lambda u, c: tag_engine(u, c, target_admins_only=False)))
-    app.add_handler(CommandHandler("admin", lambda u, c: tag_engine(u, c, target_admins_only=True)))
-    
-    app.add_handler(CommandHandler("stop", stop_command))
-          
