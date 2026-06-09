@@ -2,7 +2,7 @@
 
 <h4 align="center">Telegram group members tagging bot This is a powerful Telegram Tagging Bot designed to keep your group active, engaging, and well-managed 🚀<br> ... Written With Python and Telethon...</h4>
 
-<p align="center"><a href="https://t.me/Comeback_009"><img src="https://image-link.edgeone.app/1780976304892-af3kam.jpg" width="400"></a></p>
+<p align="center"><a href="https://t.me/Comeback_009"><img src="https://files.catbox.moe/1gxuh7.jpg" width="400"></a></p>
 
 <p align="center">
     <a href="https://github.com/nirajkumar7257/Tg-Ai-Mention-bot-"> <img src="https://img.shields.io/codacy/grade/4d58f2a402b54aed8a7d95f7add45a81?color=brightgreen&logo=codacy&logoColor=green&style=for-the-badge" alt="Codacy" /></a>
